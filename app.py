@@ -208,7 +208,14 @@ for tab, t in zip(tabs, results.keys()):
 
             if not r["feature_importance"].empty:
                 st.markdown("##### What drives this ticker (Random Forest importance)")
-                st.bar_chart(r["feature_importance"].head(8), key=f"feat_imp_{t}")
+                imp_top = r["feature_importance"].head(8).sort_values()
+                imp_fig = go.Figure(go.Bar(
+                    x=imp_top.values, y=imp_top.index, orientation="h",
+                    marker_color="#4fd1c5",
+                ))
+                imp_fig.update_layout(height=260, template="plotly_dark", paper_bgcolor="#0d1117",
+                                       plot_bgcolor="#0d1117", margin=dict(l=10, r=10, t=10, b=10))
+                st.plotly_chart(imp_fig, use_container_width=True, key=f"feat_imp_{t}")
 
         with right:
             st.markdown("##### News sentiment")
