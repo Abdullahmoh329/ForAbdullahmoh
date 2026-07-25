@@ -37,6 +37,21 @@ h1, h2, h3 { font-family: 'IBM Plex Mono', 'Courier New', monospace; letter-spac
     background: #241c0f; border: 1px solid #6b4e16; border-radius: 6px;
     padding: 12px 16px; font-size: 0.82rem; color: #f0c987;
 }
+.signal-card {
+    border-radius: 10px; padding: 18px 20px; margin-bottom: 14px;
+    border: 1px solid var(--line);
+}
+.signal-long { background: rgba(63,185,80,0.10); border-color: #3fb950; }
+.signal-short { background: rgba(248,81,73,0.10); border-color: #f85149; }
+.signal-flat { background: rgba(139,148,158,0.08); border-color: var(--line); }
+.badge {
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-size: 0.78rem; font-weight: 600; letter-spacing: 0.3px;
+}
+.badge-high { background: rgba(63,185,80,0.18); color: #3fb950; }
+.badge-medium { background: rgba(240,163,92,0.18); color: #f0a35c; }
+.badge-low { background: rgba(248,81,73,0.18); color: #f85149; }
+.badge-none { background: rgba(139,148,158,0.18); color: #8b949e; }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -48,6 +63,7 @@ st.markdown(
     '<div class="disclaimer">⚠️ Educational tool, not financial advice. Free-tier data (delayed/EOD), '
     'a small watchlist, and a limited backtest window mean results can look better than live trading will feel. '
     'Options "flow" here is a volume/open-interest proxy from delayed chain data, not real-time order flow. '
+    'Every reliability score and options idea is derived only from this app\'s own backtest — not a guarantee. '
     'Paper trade any strategy before risking capital.</div>',
     unsafe_allow_html=True,
 )
@@ -56,9 +72,9 @@ st.write("")
 with st.sidebar:
     st.header("Watchlist")
     default_text = ", ".join(config.WATCHLIST)
-    tickers_input = st.text_area("Tickers (comma-separated)", value=default_text, height=80)
+    tickers_input = st.text_area("Tickers (comma-separated)", value=default_text, height=80, key="tickers_input")
     tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
-    run = st.button("Run analysis", type="primary", use_container_width=True)
+    run = st.button("Run analysis", type="primary", use_container_width=True, key="run_button")
     st.caption(f"Forward-return horizon: {config.FORWARD_RETURN_DAYS}d · Strategy candidates searched: {config.N_RANDOM_STRATEGIES}")
 
 if "results" not in st.session_state:
@@ -82,6 +98,16 @@ if not results:
     st.info("Set your watchlist in the sidebar and click **Run analysis**.")
     st.stop()
 
+BADGE_CLASS = {"High": "badge-high", "Medium": "badge-medium", "Low": "badge-low", "No signal": "badge-none"}
+SIGNAL_LABEL = {1: "LONG", -1: "SHORT", 0: "FLAT"}
+SIGNAL_CLASS = {1: "signal-long", -1: "signal-short", 0: "signal-flat"}
+TREND_STATUS_LABEL = {
+    "above_resistance": "Broke above resistance trendline",
+    "below_support": "Broke below support trendline",
+    "inside_channel": "Inside channel",
+}
+TREND_DIR_LABEL = {"up": "Uptrend", "down": "Downtrend", "flat": "Sideways"}
+
 # ---- Overview table across the whole watchlist ----
 st.subheader("Watchlist overview")
 rows = []
@@ -89,21 +115,22 @@ for t, r in results.items():
     if "error" in r:
         rows.append({"Ticker": t, "Error": r["error"]})
         continue
-    strat = r["strategy"]
-    test_m = strat.test_metrics or {}
+    rel = r["reliability"]
     rows.append({
         "Ticker": t,
+        "Signal": SIGNAL_LABEL.get(r["current_signal"], "FLAT"),
+        "Reliability": f"{rel['label']} ({rel['score']})",
         "Last close": round(r["price_df"]["close"].iloc[-1], 2),
         "RSI": round(r["latest"]["rsi"], 1) if pd.notna(r["latest"]["rsi"]) else None,
         "ADX": round(r["latest"]["adx"], 1) if pd.notna(r["latest"]["adx"]) else None,
+        "Trend": TREND_DIR_LABEL.get(r["latest"]["trend_direction"], "n/a"),
         "Sentiment": round(r["sentiment"]["score"], 2),
         "Options skew": round(r["options"]["unusual_score"], 2) if r["options"]["available"] else None,
-        "Strategy OOS Sharpe": round(test_m.get("sharpe", 0.0), 2) if test_m else None,
-        "Strategy OOS return %": round(test_m.get("total_return_pct", 0.0), 1) if test_m else None,
+        "Strategy OOS Sharpe": round(r["strategy"].test_metrics.get("sharpe", 0.0), 2) if r["strategy"].test_metrics else None,
         "Buy&Hold return %": round(r["baseline"]["total_return_pct"], 1),
     })
 overview_df = pd.DataFrame(rows).set_index("Ticker")
-st.dataframe(overview_df, use_container_width=True)
+st.dataframe(overview_df, use_container_width=True, key="overview_table")
 
 st.divider()
 
@@ -118,13 +145,26 @@ for tab, t in zip(tabs, results.keys()):
 
         latest = r["latest"]
         strat = r["strategy"]
+        rel = r["reliability"]
+        sig = r["current_signal"]
+        idea = r["option_idea"]
+
+        # ---- Today's signal summary card ----
+        st.markdown(
+            f'<div class="signal-card {SIGNAL_CLASS.get(sig, "signal-flat")}">'
+            f'<span style="font-size:1.4rem; font-weight:700;">{t} — {SIGNAL_LABEL.get(sig, "FLAT")}</span>'
+            f'&nbsp;&nbsp;<span class="badge {BADGE_CLASS.get(rel["label"], "badge-none")}">Reliability: {rel["label"]} · {rel["score"]}/100</span>'
+            f'<div style="margin-top:6px; color:var(--muted); font-size:0.85rem;">{rel["reason"]}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Close", f"${r['price_df']['close'].iloc[-1]:.2f}")
         col2.metric("RSI (14)", f"{latest['rsi']:.1f}" if pd.notna(latest["rsi"]) else "n/a")
         col3.metric("ADX (14)", f"{latest['adx']:.1f}" if pd.notna(latest["adx"]) else "n/a")
-        trend_note = {"": "no trendline break", "breakout_up": "broke above resistance", "breakdown": "broke below support"}
-        col4.metric("Trend", trend_note.get(latest["trend_break"], "n/a"))
+        trend_line = f"{TREND_DIR_LABEL.get(latest['trend_direction'], 'n/a')} · {TREND_STATUS_LABEL.get(latest['trend_status'], '')}"
+        col4.metric("Trend", trend_line)
 
         # --- Price chart with VWAP proxy ---
         fig = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.55, 0.2, 0.25], vertical_spacing=0.03)
@@ -142,7 +182,7 @@ for tab, t in zip(tabs, results.keys()):
         fig.add_hline(y=30, line_dash="dot", line_color="#8b949e", row=3, col=1)
         fig.update_layout(height=560, template="plotly_dark", paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
                            margin=dict(l=10, r=10, t=10, b=10), showlegend=True, xaxis_rangeslider_visible=False)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key=f"price_chart_{t}")
 
         left, right = st.columns(2)
 
@@ -163,20 +203,18 @@ for tab, t in zip(tabs, results.keys()):
                              f"Max DD: **{vm.get('max_drawdown_pct', 0):.1f}%**  ·  Trades: **{vm.get('n_trades', 0)}**")
                 st.caption(f"Buy & hold over same period: {r['baseline']['total_return_pct']:.1f}% return, "
                            f"Sharpe {r['baseline']['sharpe']:.2f}")
-                if strat.test_metrics.get("n_trades", 0) < config.MIN_TRADES_FOR_VALID_STRATEGY:
-                    st.warning("Out-of-sample trade count is low — treat these metrics as low-confidence.")
             else:
                 st.warning("No strategy cleared the minimum trade/quality bar for this ticker. Try a longer lookback or a different ticker.")
 
             if not r["feature_importance"].empty:
                 st.markdown("##### What drives this ticker (Random Forest importance)")
-                st.bar_chart(r["feature_importance"].head(8))
+                st.bar_chart(r["feature_importance"].head(8), key=f"feat_imp_{t}")
 
         with right:
             st.markdown("##### News sentiment")
             sent = r["sentiment"]
             st.write(f"Aggregate score: **{sent['score']:.2f}** (−1 bearish → +1 bullish), from {sent['n_headlines']} headlines")
-            for h, s in sent["headlines"][:8]:
+            for j, (h, s) in enumerate(sent["headlines"][:8]):
                 tag = "🟢" if s > 0.15 else ("🔴" if s < -0.15 else "⚪")
                 st.write(f"{tag} {h}  `{s:+.2f}`")
 
@@ -187,9 +225,21 @@ for tab, t in zip(tabs, results.keys()):
                          f"Unusual-activity skew: **{opts['unusual_score']:+.2f}** (+bullish / −bearish)")
                 st.caption(f"Call volume: {opts['call_volume']:,}  ·  Put volume: {opts['put_volume']:,}")
                 if not opts["unusual_strikes"].empty:
-                    st.dataframe(opts["unusual_strikes"], use_container_width=True, height=220)
+                    st.dataframe(opts["unusual_strikes"], use_container_width=True, height=220, key=f"unusual_{t}")
             else:
                 st.caption("No options chain data available for this ticker.")
+
+        st.divider()
+        st.markdown("##### 💡 Options idea (from this signal + backtest reliability)")
+        st.markdown(f"**Structure: {idea['structure']}**")
+        st.write(idea["rationale"])
+        for w in idea["warnings"]:
+            st.warning(w)
+        if idea["candidates"] is not None and not idea["candidates"].empty:
+            st.caption("Live candidate contracts near-the-money, ~14-60 days to expiry, sorted by volume:")
+            st.dataframe(idea["candidates"], use_container_width=True, key=f"optideas_{t}")
+        elif idea["structure"] != "No clear edge":
+            st.caption("No matching liquid contracts found in the current chain snapshot for this structure/expiry window.")
 
         st.markdown("##### Strategy equity curve (out-of-sample)")
         if strat.test_metrics.get("equity_curve") is not None and len(strat.test_metrics["equity_curve"]) > 1:
@@ -199,6 +249,6 @@ for tab, t in zip(tabs, results.keys()):
                                          line=dict(color="#4fd1c5")))
             ec_fig.update_layout(height=260, template="plotly_dark", paper_bgcolor="#0d1117",
                                   plot_bgcolor="#0d1117", margin=dict(l=10, r=10, t=10, b=10))
-            st.plotly_chart(ec_fig, use_container_width=True)
+            st.plotly_chart(ec_fig, use_container_width=True, key=f"equity_{t}")
         else:
             st.caption("Not enough out-of-sample bars to plot an equity curve.")

@@ -144,41 +144,56 @@ def trendline_signal(close: pd.Series, lookback: int = config.TRENDLINE_LOOKBACK
     """
     highs_idx, lows_idx = swing_points(close, order=config.SWING_LOOKBACK)
     n = len(close)
-    slope_out = pd.Series(0.0, index=close.index)
-    breakout_out = pd.Series("", index=close.index)
+    slope_out = pd.Series(0.0, index=close.index)          # % per bar, normalized by price
+    status_out = pd.Series("inside_channel", index=close.index)   # always populated
+    direction_out = pd.Series("flat", index=close.index)          # always populated
+    breakout_out = pd.Series("", index=close.index)               # kept for backward compat
 
     for i in range(lookback, n):
         window_lows = [j for j in lows_idx if i - lookback <= j <= i]
         window_highs = [j for j in highs_idx if i - lookback <= j <= i]
 
-        support_break = False
-        resistance_break = False
-        slope = 0.0
+        support_level = resistance_level = None
+        slopes = []
 
         if len(window_lows) >= 2:
             xs = np.array(window_lows)
             ys = close.iloc[window_lows].values
             m, b = np.polyfit(xs, ys, 1)
-            slope = m
             support_level = m * i + b
-            if close.iloc[i] < support_level:
-                support_break = True
+            slopes.append(m)
 
         if len(window_highs) >= 2:
             xs = np.array(window_highs)
             ys = close.iloc[window_highs].values
             m, b = np.polyfit(xs, ys, 1)
             resistance_level = m * i + b
-            if close.iloc[i] > resistance_level:
-                resistance_break = True
+            slopes.append(m)
 
-        slope_out.iloc[i] = slope
-        if resistance_break and not support_break:
+        px = close.iloc[i]
+        if slopes:
+            avg_slope = float(np.mean(slopes))
+            slope_out.iloc[i] = (avg_slope / px * 100) if px else 0.0
+            if slope_out.iloc[i] > 0.05:
+                direction_out.iloc[i] = "up"
+            elif slope_out.iloc[i] < -0.05:
+                direction_out.iloc[i] = "down"
+
+        if resistance_level is not None and px > resistance_level:
+            status_out.iloc[i] = "above_resistance"
             breakout_out.iloc[i] = "breakout_up"
-        elif support_break and not resistance_break:
+        elif support_level is not None and px < support_level:
+            status_out.iloc[i] = "below_support"
             breakout_out.iloc[i] = "breakdown"
+        else:
+            status_out.iloc[i] = "inside_channel"
 
-    return pd.DataFrame({"trend_slope": slope_out, "trend_break": breakout_out})
+    return pd.DataFrame({
+        "trend_slope": slope_out,
+        "trend_status": status_out,
+        "trend_direction": direction_out,
+        "trend_break": breakout_out,
+    })
 
 
 # --------------------------------------------------------------- Patterns -

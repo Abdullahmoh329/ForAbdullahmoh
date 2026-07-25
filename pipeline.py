@@ -11,6 +11,7 @@ import sentiment
 import options_flow
 import strategy_engine
 import backtester
+import options_strategy
 
 
 def analyze_ticker(ticker: str) -> dict:
@@ -27,6 +28,26 @@ def analyze_ticker(ticker: str) -> dict:
 
     strat = strategy_engine.generate_strategy(ticker, feat_df, top_features)
     baseline = backtester.buy_and_hold_baseline(feat_df["close"].dropna())
+    reliability = strategy_engine.compute_reliability(strat)
+
+    latest_row = ind_df.iloc[-1] if not ind_df.empty else None
+
+    # Today's live signal: apply the discovered rules to the most recent bar
+    current_signal = 0
+    if latest_row is not None and (strat.long_rules or strat.short_rules):
+        last_feat_row = feat_df.iloc[[-1]]
+        sig_series = strat.build_signal(last_feat_row)
+        current_signal = int(sig_series.iloc[0])
+
+    options_chain_raw = data_fetch.get_options_snapshot(ticker)
+    option_idea = options_strategy.suggest_options_idea(
+        ticker=ticker,
+        signal=current_signal,
+        reliability=reliability,
+        latest_indicators=latest_row if latest_row is not None else {},
+        options_chain=options_chain_raw,
+        sentiment_score=sent["score"],
+    )
 
     return {
         "ticker": ticker,
@@ -38,5 +59,8 @@ def analyze_ticker(ticker: str) -> dict:
         "feature_importance": importances,
         "strategy": strat,
         "baseline": baseline,
-        "latest": ind_df.iloc[-1] if not ind_df.empty else None,
+        "latest": latest_row,
+        "reliability": reliability,
+        "current_signal": current_signal,
+        "option_idea": option_idea,
     }

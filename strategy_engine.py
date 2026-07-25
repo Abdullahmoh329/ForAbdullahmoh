@@ -29,7 +29,8 @@ FEATURE_COLUMNS = [
     "rsi", "macd_hist", "adx", "vwap_dev_pct", "vol_z", "trend_slope",
     "divergence_bull", "divergence_bear", "gap_up", "gap_down",
     "bullish_engulfing", "bearish_engulfing", "hammer", "shooting_star",
-    "trend_break_up", "trend_break_down", "sentiment", "options_unusual_score",
+    "trend_break_up", "trend_break_down", "trend_up", "trend_down",
+    "sentiment", "options_unusual_score",
 ]
 
 
@@ -43,8 +44,10 @@ def assemble_features(indicator_df: pd.DataFrame, sentiment_score: float, option
     df["bearish_engulfing"] = df["bearish_engulfing"].astype(int)
     df["hammer"] = df["hammer"].astype(int)
     df["shooting_star"] = df["shooting_star"].astype(int)
-    df["trend_break_up"] = (df["trend_break"] == "breakout_up").astype(int)
-    df["trend_break_down"] = (df["trend_break"] == "breakdown").astype(int)
+    df["trend_break_up"] = (df["trend_status"] == "above_resistance").astype(int)
+    df["trend_break_down"] = (df["trend_status"] == "below_support").astype(int)
+    df["trend_up"] = (df["trend_direction"] == "up").astype(int)
+    df["trend_down"] = (df["trend_direction"] == "down").astype(int)
     # sentiment/options are point-in-time snapshots (today's news/chain), applied uniformly
     # across history as the best available proxy for "current tone" -- flagged in the UI.
     df["sentiment"] = sentiment_score
@@ -117,6 +120,7 @@ class Strategy:
 BOOL_FEATURES = {
     "divergence_bull", "divergence_bear", "gap_up", "gap_down", "bullish_engulfing",
     "bearish_engulfing", "hammer", "shooting_star", "trend_break_up", "trend_break_down",
+    "trend_up", "trend_down",
 }
 
 
@@ -176,3 +180,56 @@ def generate_strategy(ticker: str, feat_df: pd.DataFrame, top_features: list[str
     test_signal = best_strategy.build_signal(test)
     best_strategy.test_metrics = backtester.run_backtest(test["close"], test_signal)
     return best_strategy
+
+
+def compute_reliability(strat: "Strategy") -> dict:
+    """
+    A single 0-100 confidence score for a discovered strategy, built ONLY
+    from its own backtest numbers -- not a guarantee of future performance,
+    just a way to compare "how much does the evidence support this rule"
+    across tickers at a glance.
+
+    Weighting:
+      - 40 pts: out-of-sample Sharpe (the number that matters most)
+      - 20 pts: out-of-sample win rate
+      - 15 pts: out-of-sample profit factor
+      - 15 pts: sample size (more OOS trades = more evidence)
+      - 10 pts: train/test consistency (penalizes strategies that only
+                worked in-sample -- the classic overfit tell)
+    """
+    tm, vm = strat.train_metrics or {}, strat.test_metrics or {}
+    if not vm or vm.get("n_trades", 0) == 0:
+        return {"score": 0, "label": "No signal", "reason": "Strategy search found no valid out-of-sample trades."}
+
+    def clip(x, lo, hi):
+        return max(lo, min(hi, x))
+
+    sharpe_pts = clip(vm.get("sharpe", 0) / 3.0, -1, 1) * 40
+    winrate_pts = clip(vm.get("win_rate_pct", 0) / 100, 0, 1) * 20
+    pf = vm.get("profit_factor", 0)
+    pf = 3.0 if pf == float("inf") else pf
+    pf_pts = clip(pf / 3.0, 0, 1) * 15
+    sample_pts = clip(vm.get("n_trades", 0) / 30, 0, 1) * 15
+    train_sharpe, test_sharpe = tm.get("sharpe", 0), vm.get("sharpe", 0)
+    gap = abs(train_sharpe - test_sharpe)
+    consistency_pts = clip(1 - gap / 3.0, 0, 1) * 10
+
+    score = round(max(0, sharpe_pts + winrate_pts + pf_pts + sample_pts + consistency_pts))
+
+    if score >= 65:
+        label = "High"
+    elif score >= 40:
+        label = "Medium"
+    else:
+        label = "Low"
+
+    reasons = []
+    if vm.get("n_trades", 0) < config.MIN_TRADES_FOR_VALID_STRATEGY:
+        reasons.append("few out-of-sample trades")
+    if gap > 1.5:
+        reasons.append("large gap between in-sample and out-of-sample results (overfit risk)")
+    if vm.get("sharpe", 0) < 0:
+        reasons.append("negative out-of-sample Sharpe")
+    reason = "; ".join(reasons) if reasons else "consistent in-sample/out-of-sample performance with adequate sample size"
+
+    return {"score": score, "label": label, "reason": reason}
