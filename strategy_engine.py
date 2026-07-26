@@ -45,31 +45,38 @@ import backtester
 # this is what makes a discovered strategy a confluence, not a single
 # indicator dressed up as one.
 FEATURE_CATEGORIES = {
-    "rsi": "momentum",
-    "macd_hist": "momentum",
-    "divergence_bull": "momentum",
-    "divergence_bear": "momentum",
-    "adx": "volatility",
-    "trend_slope": "trend",
-    "trend_up": "trend",
-    "trend_down": "trend",
-    "trend_break_up": "trend",
-    "trend_break_down": "trend",
-    "vwap_dev_pct": "volume",
-    "vol_z": "volume",
-    "gap_up": "pattern",
-    "gap_down": "pattern",
-    "bullish_engulfing": "pattern",
-    "bearish_engulfing": "pattern",
-    "hammer": "pattern",
-    "shooting_star": "pattern",
+    # momentum
+    "rsi": "momentum", "rsi_7": "momentum", "rsi_21": "momentum",
+    "macd_hist": "momentum", "macd_cross_up": "momentum", "macd_cross_down": "momentum",
+    "divergence_bull": "momentum", "divergence_bear": "momentum",
+    "stoch_k": "momentum", "stoch_d": "momentum", "williams_r": "momentum",
+    "cci": "momentum", "mfi": "momentum", "roc": "momentum", "momentum": "momentum",
+    # trend
+    "trend_slope": "trend", "trend_up": "trend", "trend_down": "trend",
+    "trend_break_up": "trend", "trend_break_down": "trend",
+    "ema_fast_above_slow": "trend", "golden_cross": "trend", "price_above_sma50": "trend",
+    "adx_rising": "trend", "donchian_breakout_up": "trend", "donchian_breakout_down": "trend",
+    # volatility
+    "adx": "volatility", "atr_pct": "volatility", "bb_width": "volatility", "bb_position": "volatility",
+    # volume
+    "vwap_dev_pct": "volume", "vol_z": "volume", "volume_spike": "volume",
+    "price_above_vwap": "volume", "obv_slope": "volume",
+    # pattern
+    "gap_up": "pattern", "gap_down": "pattern",
+    "bullish_engulfing": "pattern", "bearish_engulfing": "pattern",
+    "hammer": "pattern", "shooting_star": "pattern",
+    "three_higher_highs": "pattern", "three_lower_lows": "pattern",
+    "morning_star": "pattern", "evening_star": "pattern",
 }
 FEATURE_COLUMNS = list(FEATURE_CATEGORIES.keys())
 
 BOOL_FEATURES = {
-    "divergence_bull", "divergence_bear", "gap_up", "gap_down", "bullish_engulfing",
-    "bearish_engulfing", "hammer", "shooting_star", "trend_break_up", "trend_break_down",
-    "trend_up", "trend_down",
+    f for f, cat in FEATURE_CATEGORIES.items()
+    if f not in {
+        "rsi", "rsi_7", "rsi_21", "macd_hist", "stoch_k", "stoch_d", "williams_r",
+        "cci", "mfi", "roc", "momentum", "trend_slope", "adx", "atr_pct", "bb_width",
+        "bb_position", "vwap_dev_pct", "vol_z",
+    }
 }
 
 
@@ -221,7 +228,7 @@ def generate_strategy(ticker: str, feat_df: pd.DataFrame, top_features: list[str
     # Widen the pool beyond the raw top-N so the search actually has
     # multiple categories to draw from, not just the single best feature
     # repeated with different thresholds.
-    candidate_pool = top_features[:10] if len(top_features) >= 4 else FEATURE_COLUMNS
+    candidate_pool = top_features[:16] if len(top_features) >= 6 else FEATURE_COLUMNS
 
     best_strategy, best_sharpe = None, -np.inf
 
@@ -250,22 +257,28 @@ def generate_strategy(ticker: str, feat_df: pd.DataFrame, top_features: list[str
     return best_strategy
 
 
-def compute_reliability(strat: "Strategy") -> dict:
+def compute_reliability(strat: "Strategy", ml_aggregate: dict | None = None) -> dict:
     """
-    A single 0-100 confidence score for a discovered strategy, built ONLY
-    from its own backtest numbers -- not a guarantee of future performance,
-    just a way to compare "how much does the evidence support this rule"
-    across tickers at a glance.
+    A single 0-100 confidence score for a discovered strategy, built from
+    its own backtest numbers plus (if available) the walk-forward ML
+    study's out-of-fold accuracy. This is NOT a probability of being
+    right, and it is HARD-CAPPED well below 100 -- see the cap note below.
 
     Weighting:
-      - 35 pts: out-of-sample Sharpe (the number that matters most)
-      - 20 pts: out-of-sample win rate
+      - 30 pts: out-of-sample Sharpe (the number that matters most)
+      - 15 pts: out-of-sample win rate
       - 15 pts: out-of-sample profit factor
       - 15 pts: sample size (more OOS trades = more evidence)
       - 10 pts: train/test consistency (penalizes strategies that only
                 worked in-sample -- the classic overfit tell)
-      - 5 pts:  category diversity (rewards genuine confluence over a
-                strategy that happened to only need 2 categories)
+      - 5 pts:  category diversity (rewards genuine confluence)
+      - 10 pts: ML walk-forward edge over baseline, IF a study ran and
+                that edge held up across folds (not just one lucky fold)
+
+    Hard cap at 85: no combination of these inputs can score higher than
+    that. Daily-bar market direction is genuinely hard to predict --
+    anything claiming near-certainty is a red flag, not a good sign, and
+    this app will not manufacture a number that implies otherwise.
     """
     tm, vm = strat.train_metrics or {}, strat.test_metrics or {}
     if not vm or vm.get("n_trades", 0) == 0:
@@ -274,8 +287,8 @@ def compute_reliability(strat: "Strategy") -> dict:
     def clip(x, lo, hi):
         return max(lo, min(hi, x))
 
-    sharpe_pts = clip(vm.get("sharpe", 0) / 3.0, -1, 1) * 35
-    winrate_pts = clip(vm.get("win_rate_pct", 0) / 100, 0, 1) * 20
+    sharpe_pts = clip(vm.get("sharpe", 0) / 3.0, -1, 1) * 30
+    winrate_pts = clip(vm.get("win_rate_pct", 0) / 100, 0, 1) * 15
     pf = vm.get("profit_factor", 0)
     pf = 3.0 if pf == float("inf") else pf
     pf_pts = clip(pf / 3.0, 0, 1) * 15
@@ -286,11 +299,23 @@ def compute_reliability(strat: "Strategy") -> dict:
     n_cats = strat.n_categories()
     diversity_pts = clip(n_cats / 3.0, 0, 1) * 5
 
-    score = round(max(0, sharpe_pts + winrate_pts + pf_pts + sample_pts + consistency_pts + diversity_pts))
+    ml_pts = 0.0
+    ml_note = None
+    if ml_aggregate and ml_aggregate.get("ran"):
+        agg = ml_aggregate["aggregate"]
+        edge = agg.get("edge_over_baseline", 0)
+        if agg.get("consistent_edge"):
+            ml_pts = clip(edge / 0.08, 0, 1) * 10  # +8pp accuracy over baseline, consistently, maxes this out
+            ml_note = f"walk-forward ML held a {edge*100:+.1f}pp edge over baseline across all {agg['n_folds_run']} folds"
+        else:
+            ml_note = f"walk-forward ML edge ({edge*100:+.1f}pp) did not hold consistently across folds"
 
-    if score >= 65:
+    raw_score = sharpe_pts + winrate_pts + pf_pts + sample_pts + consistency_pts + diversity_pts + ml_pts
+    score = round(clip(raw_score, 0, 85))  # hard cap -- see docstring
+
+    if score >= 60:
         label = "High"
-    elif score >= 40:
+    elif score >= 35:
         label = "Medium"
     else:
         label = "Low"
@@ -302,6 +327,8 @@ def compute_reliability(strat: "Strategy") -> dict:
         reasons.append("large gap between in-sample and out-of-sample results (overfit risk)")
     if vm.get("sharpe", 0) < 0:
         reasons.append("negative out-of-sample Sharpe")
+    if ml_note:
+        reasons.append(ml_note)
     reason = "; ".join(reasons) if reasons else f"confluence across {n_cats} indicator categories with consistent in-/out-of-sample performance"
 
     return {"score": score, "label": label, "reason": reason, "n_categories": n_cats}

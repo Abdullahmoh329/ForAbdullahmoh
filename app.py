@@ -5,6 +5,7 @@ from plotly.subplots import make_subplots
 
 import config
 import pipeline
+import strategy_engine
 
 st.set_page_config(page_title="Trading Idea Advisor", layout="wide", page_icon="📊")
 
@@ -60,11 +61,12 @@ st.title("📊 Trading Idea Advisor")
 st.caption("Per-ticker strategy discovery from technicals, sentiment, and an options-flow proxy — built on free-tier data.")
 
 st.markdown(
-    '<div class="disclaimer">⚠️ Educational tool, not financial advice. Free-tier data (delayed/EOD), '
-    'a small watchlist, and a limited backtest window mean results can look better than live trading will feel. '
-    'Options "flow" here is a volume/open-interest proxy from delayed chain data, not real-time order flow. '
-    'Every reliability score and options idea is derived only from this app\'s own backtest — not a guarantee. '
-    'Paper trade any strategy before risking capital.</div>',
+    '<div class="disclaimer">⚠️ Educational tool, not financial advice. Reliability scores are '
+    '<b>hard-capped at 85/100</b> on purpose — no legitimate system can honestly claim near-certainty on '
+    'daily market direction, and a tool that showed you 99% would be lying to you, not helping you. '
+    'Free-tier data (delayed/EOD), a small watchlist, and a limited backtest window mean results can look '
+    'better than live trading will feel. Options "flow" is a volume/open-interest proxy, not real-time order '
+    'flow. Paper trade any strategy before risking capital.</div>',
     unsafe_allow_html=True,
 )
 st.write("")
@@ -75,7 +77,12 @@ with st.sidebar:
     tickers_input = st.text_area("Tickers (comma-separated)", value=default_text, height=80, key="tickers_input")
     tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
     run = st.button("Run analysis", type="primary", use_container_width=True, key="run_button")
-    st.caption(f"Forward-return horizon: {config.FORWARD_RETURN_DAYS}d · Strategy candidates searched: {config.N_RANDOM_STRATEGIES}")
+    st.caption(
+        f"~{len(strategy_engine.FEATURE_COLUMNS)} indicators screened per ticker · "
+        f"{config.N_RANDOM_STRATEGIES} rule combinations searched · "
+        f"{config.ML_STUDY_FOLDS}-fold walk-forward ML study · "
+        "expect ~5-10s per ticker."
+    )
 
 if "results" not in st.session_state:
     st.session_state.results = {}
@@ -274,6 +281,41 @@ for tab, t in zip(tabs, results.keys()):
             st.dataframe(idea["candidates"], use_container_width=True, key=f"optideas_{t}")
         elif idea["structure"] != "No clear edge":
             st.caption("No matching liquid contracts found in the current chain snapshot for this structure/expiry window.")
+
+        st.divider()
+        st.markdown("##### 🔬 ML study: walk-forward screen of the full indicator universe")
+        ml = r["ml_study"]
+        if not ml["ran"]:
+            st.caption(f"Study did not run: {ml['reason']}")
+        else:
+            agg = ml["aggregate"]
+            edge_color = "🟢" if agg["consistent_edge"] else "🟡"
+            st.write(
+                f"{edge_color} Tested **{agg['n_features_tested']} indicators** across **{agg['n_folds_run']} walk-forward folds** "
+                f"(each fold trains only on data before its test window, like live trading)."
+            )
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Mean accuracy", f"{agg['mean_accuracy']*100:.1f}%", help="Ensemble (RF+GB+LogReg) accuracy, averaged across folds")
+            c2.metric("Baseline (majority class)", f"{agg['baseline_accuracy']*100:.1f}%", help="What you'd get always predicting the more common direction")
+            c3.metric("Edge over baseline", f"{agg['edge_over_baseline']*100:+.1f}pp")
+            c4.metric("Mean AUC", f"{agg['mean_auc']:.2f}" if agg["mean_auc"] is not None else "n/a")
+            if not agg["consistent_edge"]:
+                st.caption("This ticker's edge did not hold consistently across every fold — treat the technical strategy above with extra caution.")
+
+            fold_df = pd.DataFrame(ml["fold_results"]).set_index("fold")
+            st.caption("Fold-by-fold detail (walk-forward, chronological — fold 1 is the earliest, most limited data):")
+            st.dataframe(fold_df, use_container_width=True, key=f"ml_folds_{t}")
+
+            stab = ml["feature_stability"].head(10).iloc[::-1]
+            stab_fig = go.Figure(go.Bar(
+                x=stab["mean_importance"], y=stab.index, orientation="h",
+                error_x=dict(type="data", array=stab["std_importance"]),
+                marker_color="#f0a35c",
+            ))
+            stab_fig.update_layout(height=280, template="plotly_dark", paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+                                    margin=dict(l=10, r=10, t=10, b=10),
+                                    title=dict(text="Most consistently important indicators across folds", font=dict(size=12)))
+            st.plotly_chart(stab_fig, use_container_width=True, key=f"ml_stability_{t}")
 
         st.markdown("##### Strategy equity curve (out-of-sample)")
         if strat.test_metrics.get("equity_curve") is not None and len(strat.test_metrics["equity_curve"]) > 1:

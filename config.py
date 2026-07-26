@@ -28,13 +28,17 @@ UNUSUAL_VOL_OI_RATIO = 1.0    # volume/OI above this on a strike is flagged "unu
 NEWS_MAX_HEADLINES = 20
 
 # ---- Strategy search (per-ticker "novel" strategy generation) ----
-N_RANDOM_STRATEGIES = 600     # candidates sampled per ticker
+N_RANDOM_STRATEGIES = 1200     # candidates sampled per ticker (larger feature universe -> wider search)
 FORWARD_RETURN_DAYS = 5       # label horizon: return over next N bars
 TRAIN_TEST_SPLIT = 0.7        # fraction of history used for training/search
 MIN_TRADES_FOR_VALID_STRATEGY = 8
 MIN_RULE_CONDITIONS = 2       # every discovered strategy must combine at least this many conditions
-MAX_RULE_CONDITIONS = 4       # ...and no more than this many, to stay readable
-MIN_STRATEGY_CATEGORIES = 2   # ...spanning at least this many distinct indicator categories (confluence)
+MAX_RULE_CONDITIONS = 5       # ...and no more than this many, to stay readable
+MIN_STRATEGY_CATEGORIES = 3   # ...spanning at least this many distinct indicator categories (confluence)
+
+# ---- ML walk-forward study ----
+ML_STUDY_FOLDS = 5            # walk-forward folds for the ensemble ML study
+ML_MIN_ROWS_FOR_STUDY = 150   # need this many clean rows before the study runs at all
 
 # ---- Backtest ----
 INITIAL_CAPITAL = 10_000.0

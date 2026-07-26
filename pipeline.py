@@ -14,6 +14,7 @@ import strategy_engine
 import backtester
 import confluence
 import options_strategy
+import ml_study
 
 
 def analyze_ticker(ticker: str) -> dict:
@@ -33,7 +34,9 @@ def analyze_ticker(ticker: str) -> dict:
 
     strat = strategy_engine.generate_strategy(ticker, feat_df, top_features)
     baseline = backtester.buy_and_hold_baseline(feat_df["close"].dropna())
-    reliability = strategy_engine.compute_reliability(strat)
+
+    ml_result = ml_study.run_walk_forward_study(feat_df, strategy_engine.FEATURE_COLUMNS)
+    reliability = strategy_engine.compute_reliability(strat, ml_aggregate=ml_result)
 
     latest_row = ind_df.iloc[-1] if not ind_df.empty else None
 
@@ -78,4 +81,5 @@ def analyze_ticker(ticker: str) -> dict:
         "current_signal": backtest_signal,
         "confluence": conf,
         "option_idea": option_idea,
+        "ml_study": ml_result,
     }

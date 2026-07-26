@@ -24,44 +24,62 @@ Edit your watchlist either in the sidebar at runtime, or permanently in
 
 ```
 data_fetch.py     -> OHLCV, intraday bars, news headlines, options chains (yfinance)
-indicators.py     -> VWAP, RSI, MACD, RSI/MACD divergence, ADX, trendlines
-                      (always report a channel status + direction, not just rare
-                      breakout events), candlestick patterns, gaps, volume z-score
+indicators.py     -> ~45-signal technical universe: RSI (3 lookbacks), MACD +
+                      crossover, Stochastic, Williams %R, CCI, MFI, ADX + rising
+                      flag, ATR%, Bollinger position/width, moving-average
+                      crosses (EMA9/21, golden cross), ROC, momentum, OBV slope,
+                      Donchian breakout, VWAP deviation, volume z-score/spikes,
+                      RSI/MACD divergence, trendlines (always-on direction +
+                      channel status), candlestick + 3-bar patterns, gaps
 sentiment.py      -> VADER sentiment score over recent headlines (finance-tuned lexicon)
 options_flow.py   -> put/call ratio + volume/open-interest "unusual activity" proxy
-strategy_engine.py-> per-ticker Random Forest feature importance, then a
-                      randomized MULTI-FACTOR rule search: every discovered
-                      strategy must combine conditions from at least
-                      config.MIN_STRATEGY_CATEGORIES distinct indicator
-                      categories (trend / momentum / volatility / volume /
-                      pattern) -- a single indicator can never trigger a
-                      signal on its own. Selected by in-sample Sharpe,
-                      validated out-of-sample.
+strategy_engine.py-> per-ticker Random Forest importance over the full ~45-signal
+                      universe, then a randomized MULTI-FACTOR rule search:
+                      every discovered strategy must combine conditions from
+                      at least config.MIN_STRATEGY_CATEGORIES (default 3)
+                      distinct indicator categories (trend / momentum /
+                      volatility / volume / pattern). Selected by in-sample
+                      Sharpe, validated out-of-sample.
+ml_study.py       -> walk-forward ensemble ML study (Random Forest + Gradient
+                      Boosting + Logistic Regression, soft-voted) across
+                      config.ML_STUDY_FOLDS folds, each training only on data
+                      before its test window. Reports accuracy/precision/
+                      recall/AUC PER FOLD plus which indicators were
+                      consistently important across folds -- this is the
+                      "watch it study the data" transparency layer.
 confluence.py     -> TODAY's live multi-factor read: combines the backtested
                       strategy signal with trend, momentum/divergence,
                       patterns, options-flow proxy, and sentiment into one
-                      transparent breakdown (which factors agree, which
-                      don't) -- this is where options flow and sentiment
-                      enter decision-making, since they can't honestly be
-                      backtested (see note below)
+                      transparent breakdown (which factors agree, which don't)
 options_strategy.py-> turns the confluence read + backtest reliability into
-                      a plain-language options structure (long call/put,
-                      defined-risk spread, or "no edge") with real
-                      candidate contracts from the current chain
+                      a plain-language options structure with real candidate
+                      contracts from the current chain
 backtester.py     -> vectorized long/short backtest engine with fees, Sharpe,
                       CAGR, max drawdown, win rate, profit factor
 pipeline.py       -> wires the above together for one ticker
 app.py            -> Streamlit dashboard
 ```
 
+### On reliability scores, and why none of them approach 99%
+
+`strategy_engine.compute_reliability()` is **hard-capped at 85/100**. This
+is deliberate, not a limitation to fix. Daily-bar market direction is
+genuinely hard to predict — professional quant funds consider 55-58%
+directional accuracy with good risk-adjusted returns excellent. A tool
+that reported near-certainty would either have a bug (most commonly,
+label leakage — accidentally letting the model see the future) or be
+overfit to noise that happened to look like a pattern in this specific
+backtest window. The `ml_study.py` walk-forward study exists precisely to
+catch that: it reports each fold's numbers so you can see whether an
+edge holds up across time or was just one lucky slice of history.
+
 ### Why each ticker gets a different strategy
 
-`strategy_engine.py` trains a Random Forest per ticker to rank which
-features (RSI level, MACD divergence, ADX, VWAP deviation, trendline
-direction, patterns, gaps, etc.) actually mattered for that ticker's
+`strategy_engine.py` trains a Random Forest per ticker over ~45
+indicators to rank which ones actually mattered for that ticker's
 forward returns historically. It then randomly samples MULTI-FACTOR rule
 combinations built **only from that ticker's top features**, requiring
-each candidate to span at least two different indicator categories, and
+each candidate to span at least 3 different indicator categories, and
 keeps whichever combination had the best in-sample Sharpe ratio, before
 re-testing it on a held-out out-of-sample window. Two tickers with
 different price behavior will end up with genuinely different
