@@ -27,6 +27,7 @@ def analyze_options_flow(ticker: str) -> dict:
         return {
             "available": False, "put_call_ratio": None, "unusual_score": 0.0,
             "unusual_strikes": pd.DataFrame(), "call_volume": 0, "put_volume": 0,
+            "chain": pd.DataFrame(),
         }
 
     call_vol = chain.loc[chain["type"] == "call", "volume"].sum()
@@ -52,4 +53,5 @@ def analyze_options_flow(ticker: str) -> dict:
         "unusual_strikes": unusual.head(15)[["contractSymbol", "type", "strike", "expiry", "volume", "openInterest", "vol_oi_ratio"]],
         "call_volume": int(call_vol),
         "put_volume": int(put_vol),
+        "chain": chain,
     }

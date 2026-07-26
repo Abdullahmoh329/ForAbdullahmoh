@@ -100,13 +100,20 @@ if not results:
 
 BADGE_CLASS = {"High": "badge-high", "Medium": "badge-medium", "Low": "badge-low", "No signal": "badge-none"}
 SIGNAL_LABEL = {1: "LONG", -1: "SHORT", 0: "FLAT"}
-SIGNAL_CLASS = {1: "signal-long", -1: "signal-short", 0: "signal-flat"}
 TREND_STATUS_LABEL = {
     "above_resistance": "Broke above resistance trendline",
     "below_support": "Broke below support trendline",
     "inside_channel": "Inside channel",
 }
 TREND_DIR_LABEL = {"up": "Uptrend", "down": "Downtrend", "flat": "Sideways"}
+
+
+def confluence_class(score: float) -> str:
+    if score >= 15:
+        return "signal-long"
+    if score <= -15:
+        return "signal-short"
+    return "signal-flat"
 
 # ---- Overview table across the whole watchlist ----
 st.subheader("Watchlist overview")
@@ -116,10 +123,13 @@ for t, r in results.items():
         rows.append({"Ticker": t, "Error": r["error"]})
         continue
     rel = r["reliability"]
+    conf = r["confluence"]
     rows.append({
         "Ticker": t,
-        "Signal": SIGNAL_LABEL.get(r["current_signal"], "FLAT"),
-        "Reliability": f"{rel['label']} ({rel['score']})",
+        "Confluence": f"{conf['label']} ({conf['score']:+.0f})",
+        "Agree/Disagree": f"{conf['n_agree']}/{conf['n_disagree']} of {conf['n_factors']}",
+        "Backtest signal": SIGNAL_LABEL.get(r["current_signal"], "FLAT"),
+        "Backtest reliability": f"{rel['label']} ({rel['score']})",
         "Last close": round(r["price_df"]["close"].iloc[-1], 2),
         "RSI": round(r["latest"]["rsi"], 1) if pd.notna(r["latest"]["rsi"]) else None,
         "ADX": round(r["latest"]["adx"], 1) if pd.notna(r["latest"]["adx"]) else None,
@@ -146,18 +156,34 @@ for tab, t in zip(tabs, results.keys()):
         latest = r["latest"]
         strat = r["strategy"]
         rel = r["reliability"]
+        conf = r["confluence"]
         sig = r["current_signal"]
         idea = r["option_idea"]
 
-        # ---- Today's signal summary card ----
+        # ---- Today's confluence summary card (headline signal) ----
         st.markdown(
-            f'<div class="signal-card {SIGNAL_CLASS.get(sig, "signal-flat")}">'
-            f'<span style="font-size:1.4rem; font-weight:700;">{t} — {SIGNAL_LABEL.get(sig, "FLAT")}</span>'
-            f'&nbsp;&nbsp;<span class="badge {BADGE_CLASS.get(rel["label"], "badge-none")}">Reliability: {rel["label"]} · {rel["score"]}/100</span>'
-            f'<div style="margin-top:6px; color:var(--muted); font-size:0.85rem;">{rel["reason"]}</div>'
+            f'<div class="signal-card {confluence_class(conf["score"])}">'
+            f'<span style="font-size:1.4rem; font-weight:700;">{t} — {conf["label"]}</span>'
+            f'&nbsp;&nbsp;<span class="badge {BADGE_CLASS.get(rel["label"], "badge-none")}">Backtest reliability: {rel["label"]} · {rel["score"]}/100</span>'
+            f'<div style="margin-top:6px; color:var(--muted); font-size:0.85rem;">'
+            f'Confluence score {conf["score"]:+.0f}/100 · {conf["n_agree"]} of {conf["n_factors"]} factors agree, '
+            f'{conf["n_disagree"]} disagree · backtested rule says {SIGNAL_LABEL.get(sig, "FLAT")}'
+            f'</div>'
+            f'<div style="margin-top:2px; color:var(--muted); font-size:0.85rem;">{rel["reason"]}</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
+
+        # ---- Confluence breakdown: which factors actually agree ----
+        st.markdown("###### Confluence breakdown — who agrees, who doesn't")
+        vote_items = sorted(conf["votes"].items(), key=lambda kv: kv[1])
+        vote_fig = go.Figure(go.Bar(
+            x=[v for _, v in vote_items], y=[k for k, _ in vote_items], orientation="h",
+            marker_color=["#3fb950" if v > 0.15 else ("#f85149" if v < -0.15 else "#8b949e") for _, v in vote_items],
+        ))
+        vote_fig.update_layout(height=200, template="plotly_dark", paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+                                margin=dict(l=10, r=10, t=10, b=10), xaxis=dict(range=[-1, 1], title="bearish ← → bullish"))
+        st.plotly_chart(vote_fig, use_container_width=True, key=f"confluence_{t}")
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Close", f"${r['price_df']['close'].iloc[-1]:.2f}")
@@ -187,8 +213,9 @@ for tab, t in zip(tabs, results.keys()):
         left, right = st.columns(2)
 
         with left:
-            st.markdown("##### Discovered strategy (search-optimized for this ticker)")
+            st.markdown("##### Discovered strategy (multi-factor confluence, search-optimized for this ticker)")
             if strat.long_rules or strat.short_rules:
+                st.caption(f"Spans {strat.n_categories()} indicator categories — a single indicator alone can't trigger this rule.")
                 st.markdown(f'<div class="rule-box">{strat.describe()}</div>', unsafe_allow_html=True)
                 m1, m2 = st.columns(2)
                 with m1:
@@ -237,7 +264,7 @@ for tab, t in zip(tabs, results.keys()):
                 st.caption("No options chain data available for this ticker.")
 
         st.divider()
-        st.markdown("##### 💡 Options idea (from this signal + backtest reliability)")
+        st.markdown("##### 💡 Options idea (from multi-factor confluence + backtest reliability)")
         st.markdown(f"**Structure: {idea['structure']}**")
         st.write(idea["rationale"])
         for w in idea["warnings"]:

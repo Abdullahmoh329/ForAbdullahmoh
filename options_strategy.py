@@ -1,10 +1,11 @@
 """
-Turns (technical signal + backtest reliability + live options chain) into a
-plain-language options idea with concrete candidate contracts.
+Turns (multi-factor confluence + backtest reliability + live options
+chain) into a plain-language options idea with concrete candidate
+contracts.
 
 Deliberately conservative: it never sizes a position or tells you to
 execute anything. It picks a *contract type and rough structure* that
-matches the signal's direction and confidence, then points at real
+matches the confluence direction and strength, then points at real
 contracts from the current chain snapshot that fit that structure. You
 still decide strike/expiry/size -- treat this as a research starting
 point, not an instruction.
@@ -24,70 +25,72 @@ def _days_to_expiry(expiry_str: str) -> int:
 
 def suggest_options_idea(
     ticker: str,
-    signal: int,               # -1 / 0 / 1 -- from the discovered strategy, latest bar
+    confluence_result: dict,   # output of confluence.compute_confluence
     reliability: dict,         # output of strategy_engine.compute_reliability
     latest_indicators: pd.Series,
     options_chain: pd.DataFrame,
     sentiment_score: float,
 ) -> dict:
+    score = confluence_result.get("score", 0)
+    label = confluence_result.get("label", "Mixed / no confluence")
+    n_agree = confluence_result.get("n_agree", 0)
+    n_disagree = confluence_result.get("n_disagree", 0)
+    n_factors = confluence_result.get("n_factors", 6)
     adx_val = latest_indicators.get("adx", 0) or 0
     trend_strong = adx_val >= 25
     rel_label = reliability.get("label", "No signal")
 
-    if signal == 0 or rel_label == "No signal":
+    direction = "bullish" if score > 0 else ("bearish" if score < 0 else "neutral")
+    strong_confluence = abs(score) >= 40 and n_disagree <= 1
+    moderate_confluence = abs(score) >= 15
+
+    if direction == "neutral" or not moderate_confluence:
         structure = "No clear edge"
-        rationale = (
-            "The strategy search didn't find a reliable directional edge for this ticker right now. "
-            "Sitting out, or using a neutral/income structure if you already hold the stock "
-            "(e.g. a covered call), fits better than a directional options bet."
-        )
         contract_type = None
-    elif signal == 1:
-        if rel_label == "High" and trend_strong:
+        rationale = (
+            f"Only {n_agree} of {n_factors} factors lean the same direction right now ({label}). "
+            "That's not enough agreement across trend, momentum, patterns, options flow, and "
+            "sentiment to justify a directional options bet. Sitting out, or a neutral/income "
+            "structure if you already hold the stock, fits better."
+        )
+    elif direction == "bullish":
+        contract_type = "call"
+        if strong_confluence and trend_strong and rel_label in ("High", "Medium"):
             structure = "Long call (directional)"
-            rationale = (
-                f"The backtested strategy is bullish with {rel_label.lower()} reliability, and ADX "
-                f"({adx_val:.0f}) shows a trending market -- conditions where a directional long call "
-                "tends to have room to work rather than chop in a range."
-            )
-        elif rel_label in ("High", "Medium"):
+        elif strong_confluence or (moderate_confluence and rel_label in ("High", "Medium")):
             structure = "Bull call spread (defined-risk)"
-            rationale = (
-                f"Bullish signal with {rel_label.lower()} reliability but "
-                f"{'a trending' if trend_strong else 'a non-trending'} market (ADX {adx_val:.0f}). "
-                "A defined-risk spread caps cost and downside if the move stalls."
-            )
         else:
             structure = "Wait, or small bull call spread"
-            rationale = "Bullish lean but low reliability -- if trading it at all, keep size and risk small."
-        contract_type = "call"
+        rationale = (
+            f"{n_agree} of {n_factors} factors agree bullish ({label}, score {score:+.0f}/100), "
+            f"backtest reliability is {rel_label.lower()}, and ADX ({adx_val:.0f}) shows a "
+            f"{'trending' if trend_strong else 'non-trending'} market."
+        )
     else:
-        if rel_label == "High" and trend_strong:
+        contract_type = "put"
+        if strong_confluence and trend_strong and rel_label in ("High", "Medium"):
             structure = "Long put (directional)"
-            rationale = (
-                f"The backtested strategy is bearish with {rel_label.lower()} reliability, and ADX "
-                f"({adx_val:.0f}) shows a trending market."
-            )
-        elif rel_label in ("High", "Medium"):
+        elif strong_confluence or (moderate_confluence and rel_label in ("High", "Medium")):
             structure = "Bear put spread (defined-risk)"
-            rationale = (
-                f"Bearish signal with {rel_label.lower()} reliability but "
-                f"{'a trending' if trend_strong else 'a non-trending'} market (ADX {adx_val:.0f}). "
-                "A defined-risk spread caps cost if the move doesn't follow through."
-            )
         else:
             structure = "Wait, or small bear put spread"
-            rationale = "Bearish lean but low reliability -- if trading it at all, keep size and risk small."
-        contract_type = "put"
+        rationale = (
+            f"{n_agree} of {n_factors} factors agree bearish ({label}, score {score:+.0f}/100), "
+            f"backtest reliability is {rel_label.lower()}, and ADX ({adx_val:.0f}) shows a "
+            f"{'trending' if trend_strong else 'non-trending'} market."
+        )
 
     warnings = []
-    if signal == 1 and sentiment_score < -0.15:
-        warnings.append("News sentiment is currently negative, which cuts against this bullish technical signal.")
-    if signal == -1 and sentiment_score > 0.15:
-        warnings.append("News sentiment is currently positive, which cuts against this bearish technical signal.")
+    if moderate_confluence:
+        if n_disagree >= 2:
+            warnings.append(f"{n_disagree} of {n_factors} factors disagree with this direction -- confluence is not unanimous.")
+        if direction == "bullish" and sentiment_score < -0.15:
+            warnings.append("News sentiment is currently negative, cutting against the bullish read.")
+        if direction == "bearish" and sentiment_score > 0.15:
+            warnings.append("News sentiment is currently positive, cutting against the bearish read.")
 
     candidates = pd.DataFrame()
-    if contract_type and not options_chain.empty:
+    if contract_type and options_chain is not None and not options_chain.empty:
         chain = options_chain[options_chain["type"] == contract_type].copy()
         chain["dte"] = chain["expiry"].apply(_days_to_expiry)
         chain = chain[(chain["dte"] >= 14) & (chain["dte"] <= 60)]

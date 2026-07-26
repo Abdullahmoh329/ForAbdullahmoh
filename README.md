@@ -24,14 +24,30 @@ Edit your watchlist either in the sidebar at runtime, or permanently in
 
 ```
 data_fetch.py     -> OHLCV, intraday bars, news headlines, options chains (yfinance)
-indicators.py     -> VWAP, RSI, MACD, RSI/MACD divergence, ADX, trendlines,
-                      candlestick patterns, gaps, volume z-score
+indicators.py     -> VWAP, RSI, MACD, RSI/MACD divergence, ADX, trendlines
+                      (always report a channel status + direction, not just rare
+                      breakout events), candlestick patterns, gaps, volume z-score
 sentiment.py      -> VADER sentiment score over recent headlines (finance-tuned lexicon)
 options_flow.py   -> put/call ratio + volume/open-interest "unusual activity" proxy
 strategy_engine.py-> per-ticker Random Forest feature importance, then a
-                      randomized rule-search (evolutionary-style) restricted
-                      to that ticker's top features, selected by in-sample
-                      Sharpe and validated out-of-sample
+                      randomized MULTI-FACTOR rule search: every discovered
+                      strategy must combine conditions from at least
+                      config.MIN_STRATEGY_CATEGORIES distinct indicator
+                      categories (trend / momentum / volatility / volume /
+                      pattern) -- a single indicator can never trigger a
+                      signal on its own. Selected by in-sample Sharpe,
+                      validated out-of-sample.
+confluence.py     -> TODAY's live multi-factor read: combines the backtested
+                      strategy signal with trend, momentum/divergence,
+                      patterns, options-flow proxy, and sentiment into one
+                      transparent breakdown (which factors agree, which
+                      don't) -- this is where options flow and sentiment
+                      enter decision-making, since they can't honestly be
+                      backtested (see note below)
+options_strategy.py-> turns the confluence read + backtest reliability into
+                      a plain-language options structure (long call/put,
+                      defined-risk spread, or "no edge") with real
+                      candidate contracts from the current chain
 backtester.py     -> vectorized long/short backtest engine with fees, Sharpe,
                       CAGR, max drawdown, win rate, profit factor
 pipeline.py       -> wires the above together for one ticker
@@ -42,13 +58,29 @@ app.py            -> Streamlit dashboard
 
 `strategy_engine.py` trains a Random Forest per ticker to rank which
 features (RSI level, MACD divergence, ADX, VWAP deviation, trendline
-breaks, gaps, sentiment, options skew, etc.) actually mattered for that
-ticker's forward returns historically. It then randomly samples rule
-combinations built **only from that ticker's top features** and keeps
-whichever rule combination had the best in-sample Sharpe ratio, before
+direction, patterns, gaps, etc.) actually mattered for that ticker's
+forward returns historically. It then randomly samples MULTI-FACTOR rule
+combinations built **only from that ticker's top features**, requiring
+each candidate to span at least two different indicator categories, and
+keeps whichever combination had the best in-sample Sharpe ratio, before
 re-testing it on a held-out out-of-sample window. Two tickers with
-different price behavior will end up with genuinely different rules,
-not the same indicator stack with different tickers plugged in.
+different price behavior will end up with genuinely different
+multi-indicator rules, not the same single indicator with different
+tickers plugged in.
+
+### Why options flow and sentiment aren't inside the backtest
+
+Both are **today's snapshot** -- there's no free source of historical,
+point-in-time headlines or historical options chains. Assigning today's
+score to every historical bar would just be a constant column: it can't
+teach the rule search anything about the past, and worse, a constant
+condition ANDed into a rule can silently zero out an otherwise-good
+strategy. So they're combined into **today's decision** through
+`confluence.py`, which sits alongside the backtested technical signal
+instead of quietly corrupting it. The confluence breakdown in the UI
+shows you exactly which of the six factors (backtested strategy, trend,
+momentum/divergence, patterns, options flow, sentiment) agree and which
+don't, so nothing is hidden inside one composite number.
 
 ## Known limitations (read before trusting any number this app shows you)
 
